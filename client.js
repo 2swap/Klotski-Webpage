@@ -6,7 +6,12 @@ const graphctx = graphcanvas.getContext(`2d`);
 let tick = 0;
 let ox = 0; let oy = 100; let zoom = 1;
 let alpha = 0.8;
+let beta = 0; // X-axis rotation
+let gamma = 0; // Z-axis rotation
 let graphbutton = false;
+let mouseDown = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
 var render_lock = false;
 var save_start_board = board_string;
 
@@ -39,22 +44,31 @@ function increment_max(){
 
 function render_blurb(){
     graphctx.globalAlpha = 1;
-    var y = h - 230;
+    var y = h - 300; // Increased space for more controls
     graphctx.fillStyle = "white";
     graphctx.font = "16px Arial";
     graphctx.fillText("Configuration", 20, y+=16)
     graphctx.fillText("[c] Colors: " + config.colors.options[config.colors.select], 20, y+=16)
     graphctx.fillText("[s] Show Solutions: " + config.solutions.options[config.solutions.select], 20, y+=16)
     graphctx.fillText("[p] Shortest Path: " + config.path.options[config.path.select], 20, y+=16)
-    graphctx.fillText("[r] Reset", 20, y+=16)
+    graphctx.fillText("[r] Reset Board", 20, y+=16)
+    graphctx.fillText("[Space] Reset Camera", 20, y+=16)
+    graphctx.fillText("", 20, y+=16)
+    graphctx.fillText("Controls:", 20, y+=16)
+    graphctx.fillText("• Arrow Keys: Pan camera", 20, y+=16)
+    graphctx.fillText("• Mouse Wheel: Zoom in/out", 20, y+=16)
+    graphctx.fillText("• +/- Keys: Zoom in/out", 20, y+=16)
+    graphctx.fillText("• A/D: Rotate Y-axis", 20, y+=16)
+    graphctx.fillText("• W/S: Rotate X-axis", 20, y+=16)
+    graphctx.fillText("• Q/E: Rotate Z-axis", 20, y+=16)
+    graphctx.fillText("• Right-click + drag: Free rotation", 20, y+=16)
+    graphctx.fillText("• Left-click: Teleport to position", 20, y+=16)
     graphctx.fillText("", 20, y+=16)
     graphctx.fillText("This is the Klotski puzzle.", 20, y+=16)
     graphctx.fillText("The right depicts the graph of all positions of the puzzle.", 20, y+=16)
     graphctx.fillText("You can navigate the white circle by sliding pieces in the top left.", 20, y+=16)
     graphctx.fillText("There are a total of 25,955 unique positions.", 20, y+=16)
     graphctx.fillText("Slide pieces to move the large piece to the bottom center.", 20, y+=16)
-    graphctx.fillText("Controls: rotate with A/D, pan with arrow keys, zoom with mouse wheel.", 20, y+=16)
-    graphctx.fillText("You can also click on any position on the graph to 'teleport' to it.", 20, y+=16)
 }
 
 function render_histogram(){
@@ -82,6 +96,55 @@ function render_histogram(){
         graphctx.fillRect(w-bar_width, h*(i-1)/l, bar_width, h/l+1);
     }
 }
+
+// Add the button to the page
+const autoBtn = document.createElement('button');
+autoBtn.textContent = 'Auto Traverse Best Path';
+autoBtn.style.position = 'fixed';
+autoBtn.style.top = '20px';
+autoBtn.style.right = '20px';
+autoBtn.style.zIndex = 1000;
+autoBtn.style.fontSize = '18px';
+autoBtn.style.padding = '8px 16px';
+document.body.appendChild(autoBtn);
+
+// Find the best path (shortest path to solution)
+function get_best_path(startHash) {
+    let path = [];
+    let curr = nodes[startHash];
+    if (!curr) return path;
+    while (curr.solution_dist !== 0) {
+        path.push(curr);
+        let next = null;
+        for (let i in curr.neighbors) {
+            let neighbor = nodes[curr.neighbors[i]];
+            if (neighbor && neighbor.solution_dist < curr.solution_dist) {
+                next = neighbor;
+                break;
+            }
+        }
+        if (!next) break;
+        curr = next;
+    }
+    path.push(curr); // Add solution node
+    return path;
+}
+
+// Animate traversal, only calling render() for refresh
+autoBtn.onclick = function() {
+    let path = get_best_path(hash);
+    let i = 0;
+    function step() {
+        if (i >= path.length) return;
+        hash = Object.keys(nodes).find(k => nodes[k] === path[i]);
+        board_string = path[i].representation;
+        on_board_change();
+        render(); // Only refresh when render is called
+        i++;
+        setTimeout(step, 500); // 500ms per step
+    }
+    step();
+};
 
 function render_graph() {
     render_lock = true;
@@ -147,10 +210,27 @@ function render () {
     render_lock = false;
 }
 
-function get_node_coordinates (hash) {
+function get_node_coordinates(hash) {
     var node = nodes[hash];
-    nodes[hash].screen_x = (node.x*Math.cos(alpha)+node.z*Math.sin(alpha) - ox) / zoom + w / 2;
-    nodes[hash].screen_y = (node.y - oy) / zoom + h / 2;
+    
+    // Apply 3D rotations
+    // Rotate around Y-axis (alpha)
+    let x1 = node.x * Math.cos(alpha) - node.z * Math.sin(alpha);
+    let z1 = node.x * Math.sin(alpha) + node.z * Math.cos(alpha);
+    let y1 = node.y;
+    
+    // Rotate around X-axis (beta)
+    let y2 = y1 * Math.cos(beta) - z1 * Math.sin(beta);
+    let z2 = y1 * Math.sin(beta) + z1 * Math.cos(beta);
+    let x2 = x1;
+    
+    // Rotate around Z-axis (gamma)
+    let x3 = x2 * Math.cos(gamma) - y2 * Math.sin(gamma);
+    let y3 = x2 * Math.sin(gamma) + y2 * Math.cos(gamma);
+    
+    // Apply pan and zoom
+    nodes[hash].screen_x = (x3 - ox) / zoom + w / 2;
+    nodes[hash].screen_y = (y3 - oy) / zoom + h / 2;
 }
 
 function get_closest_node_to (coords) {
@@ -181,32 +261,111 @@ function normsin(angle){
     return Math.floor(128.0*(Math.sin(angle)+1));
 }
 
+// Enhanced wheel event with zoom limits
 window.addEventListener(`wheel`,
     (event) => {
-        zoom *= Math.pow(1.7, Math.sign(event.deltaY));
+        const zoomFactor = Math.pow(1.1, -Math.sign(event.deltaY));
+        const newZoom = zoom * zoomFactor;
+        
+        // Add zoom limits
+        if (newZoom >= 0.1 && newZoom <= 50) {
+            zoom = newZoom;
+        }
+        
         if(!render_lock)render();
     }
 );
+
+// Enhanced mouse controls
 graphcanvas.addEventListener(`mousedown`, function(e){
-    graphbutton = true;
-    var rect = graphcanvas.getBoundingClientRect();
-    var screen_coords = {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-    };
-    board_string = nodes[get_closest_node_to(screen_coords)].representation;
-    on_board_change();
+    if (e.button === 2) { // Right mouse button for rotation
+        mouseDown = true;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+        e.preventDefault(); // Prevent context menu
+    } else {
+        // Left click for teleporting to nodes
+        graphbutton = true;
+        var rect = graphcanvas.getBoundingClientRect();
+        var screen_coords = {
+            x: e.clientX - rect.left,
+            y: e.clientY - rect.top
+        };
+        board_string = nodes[get_closest_node_to(screen_coords)].representation;
+        on_board_change();
+    }
 }, false);
+
 graphcanvas.addEventListener(`mouseup`, function(e){
+    mouseDown = false;
     graphbutton = false;
 }, false);
+
 graphcanvas.addEventListener(`mousemove`, function(e){
-    if(!graphbutton) return;
-    var rect = graphcanvas.getBoundingClientRect();
-    var screen_coords = {
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top
-    };
+    if (mouseDown && e.buttons === 2) { // Right button drag for rotation
+        const deltaX = e.clientX - lastMouseX;
+        const deltaY = e.clientY - lastMouseY;
+        
+        alpha += deltaX * 0.01; // Horizontal mouse movement rotates around Y-axis
+        beta += deltaY * 0.01;  // Vertical mouse movement rotates around X-axis
+        
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+        
+        if (!render_lock) render();
+    }
+}, false);
+
+// Prevent context menu on right click
+graphcanvas.addEventListener('contextmenu', function(e) {
+    e.preventDefault();
+    return false;
+}, false);
+
+// Touch controls for mobile
+let touchStartDistance = 0;
+let touchStartAlpha = 0;
+let touchStartBeta = 0;
+
+graphcanvas.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 2) {
+        // Two finger pinch for zoom
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        touchStartDistance = Math.hypot(
+            touch2.clientX - touch1.clientX,
+            touch2.clientY - touch1.clientY
+        );
+        touchStartAlpha = alpha;
+        touchStartBeta = beta;
+    }
+    e.preventDefault();
+}, false);
+
+graphcanvas.addEventListener('touchmove', function(e) {
+    if (e.touches.length === 2) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const currentDistance = Math.hypot(
+            touch2.clientX - touch1.clientX,
+            touch2.clientY - touch1.clientY
+        );
+        
+        // Zoom based on pinch
+        if (touchStartDistance > 0) {
+            const zoomFactor = currentDistance / touchStartDistance;
+            zoom *= zoomFactor * 0.1 + 0.9; // Smooth the zoom
+        }
+        
+        // Rotation based on touch movement
+        const centerX = (touch1.clientX + touch2.clientX) / 2;
+        const centerY = (touch1.clientY + touch2.clientY) / 2;
+        alpha = touchStartAlpha + (centerX - w/2) * 0.001;
+        beta = touchStartBeta + (centerY - h/2) * 0.001;
+        
+        if (!render_lock) render();
+    }
+    e.preventDefault();
 }, false);
 
 window.addEventListener(`keydown`, key, false);
@@ -214,28 +373,45 @@ window.addEventListener(`keydown`, key, false);
 function key (e) {
     const c = e.keyCode;
     console.log(c + " " + "r".charCodeAt(0));
-    if (c == 37) ox -= zoom * 100;
-    if (c == 38) oy -= zoom * 100;
-    if (c == 39) ox += zoom * 100;
-    if (c == 40) oy += zoom * 100;
-    if (c == 65) alpha -= .04;
-    if (c == 68) alpha += .04;
-    if (c == 67) config.colors.select = (config.colors.select+1)%config.colors.options.length;
-    if (c == 83) config.solutions.select = (config.solutions.select+1)%config.solutions.options.length;
-    if (c == 80) config.path.select = (config.path.select+1)%config.path.options.length;
-    if (c == 82) board_string = save_start_board;
+    
+    // Pan controls
+    if (c == 37) ox -= zoom * 100; // Left arrow
+    if (c == 38) oy -= zoom * 100; // Up arrow
+    if (c == 39) ox += zoom * 100; // Right arrow
+    if (c == 40) oy += zoom * 100; // Down arrow
+    
+    // Rotation controls
+    if (c == 65) alpha -= .04; // A - rotate left around Y-axis
+    if (c == 68) alpha += .04; // D - rotate right around Y-axis
+    if (c == 87) beta -= .04;  // W - rotate up around X-axis
+    if (c == 83) beta += .04;  // S - rotate down around X-axis
+    if (c == 81) gamma -= .04; // Q - rotate left around Z-axis
+    if (c == 69) gamma += .04; // E - rotate right around Z-axis
+    
+    // Zoom controls
+    if (c == 187 || c == 61) { // + or = key - zoom in
+        const newZoom = zoom / 1.2;
+        if (newZoom >= 0.1) zoom = newZoom;
+    }
+    if (c == 189 || c == 173) { // - key - zoom out
+        const newZoom = zoom * 1.2;
+        if (newZoom <= 50) zoom = newZoom;
+    }
+    
+    // Configuration toggles
+    if (c == 67) config.colors.select = (config.colors.select + 1) % config.colors.options.length; // C
+    if (c == 83) config.solutions.select = (config.solutions.select + 1) % config.solutions.options.length; // S (note: this will conflict with rotation S, you may want to change this)
+    if (c == 80) config.path.select = (config.path.select + 1) % config.path.options.length; // P
+    if (c == 82) board_string = save_start_board; // R - reset board
+    
+    // Reset view
+    if (c == 32) { // Spacebar - reset camera
+        ox = 0; oy = 100; zoom = 1;
+        alpha = 0.8; beta = 0; gamma = 0;
+    }
+    
     on_board_change();
 }
-
-
-
-
-
-
-
-
-
-
 
 var square_sz = 40;
 
@@ -383,5 +559,3 @@ function get_hash() {
     }
     return closename;
 }
-
-
